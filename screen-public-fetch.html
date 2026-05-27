@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Public — derniers uploads</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 1.5rem;
+    background: #0b0b0d;
+    color: #eaeaea;
+    min-height: 100vh;
+  }
+  h1 { font-size: 1.15rem; margin: 0 0 .3rem; display: flex; align-items: center; gap: .5rem; }
+  .sub { color: #777; font-size: .8rem; margin-bottom: 1.5rem; }
+  .sub code { background: #1a1a1c; padding: 1px 6px; border-radius: 4px; color: #c4b5fd; }
+
+  .controls {
+    display: flex;
+    gap: .5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+    padding: .75rem;
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 10px;
+  }
+  button {
+    background: #6366f1;
+    color: white;
+    border: 0;
+    padding: .55rem 1rem;
+    border-radius: 7px;
+    font-weight: 600;
+    font-size: .88rem;
+    cursor: pointer;
+    transition: background .12s, transform .08s;
+  }
+  button:hover { background: #5558e8; }
+  button:active { transform: scale(.97); }
+  button.secondary { background: #27272a; color: #eaeaea; border: 1px solid #3f3f46; font-weight: 500; }
+  button.secondary:hover { background: #3f3f46; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  label { display: flex; align-items: center; gap: .4rem; font-size: .85rem; color: #aaa; }
+  input[type=number], input[type=text] {
+    background: #0f0f12;
+    border: 1px solid #333;
+    color: #eaeaea;
+    padding: .4rem .6rem;
+    border-radius: 6px;
+    font-size: .85rem;
+    font-family: inherit;
+  }
+  input[type=number] { width: 4.5rem; }
+  input[type=text] { width: 12rem; }
+
+  .status {
+    color: #888;
+    font-size: .82rem;
+    margin: .3rem 0 1rem;
+    font-family: ui-monospace, monospace;
+  }
+  .status.error { color: #ef4444; }
+  .status.ok { color: #10b981; }
+
+  .item {
+    background: #18181b;
+    border: 1px solid #27272a;
+    border-radius: 8px;
+    padding: .65rem .8rem;
+    margin-bottom: .4rem;
+    display: flex;
+    gap: .75rem;
+    align-items: center;
+    cursor: pointer;
+    transition: background .15s, border-color .15s, transform .08s;
+  }
+  .item:hover { background: #1e1e22; border-color: #3f3f46; }
+  .item:active { transform: scale(.998); }
+  .item.copied { background: #042f2e; border-color: #14b8a6; }
+  .item.copied::after { content: '✓ copié'; color: #14b8a6; font-size: .75rem; font-weight: 600; }
+  .item .url {
+    flex: 1;
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: .78rem;
+    word-break: break-all;
+    color: #d4d4d8;
+  }
+  .item .meta {
+    color: #71717a;
+    font-size: .72rem;
+    white-space: nowrap;
+    text-align: right;
+    min-width: fit-content;
+  }
+  .empty {
+    text-align: center;
+    color: #555;
+    padding: 2rem;
+    font-size: .9rem;
+  }
+  .spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid #333;
+    border-top-color: #6366f1;
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    vertical-align: middle;
+    margin-right: .4rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<h1>📸 Screen Public</h1>
+<div class="sub">repo : <code>viri-deze/screen-public</code> · clique sur un lien pour le copier</div>
+
+<div class="controls">
+  <button id="fetchBtn">↻ Fetch</button>
+  <label>fenêtre (s) : <input type="number" id="window" value="60" min="5" max="3600"></label>
+  <label>filtre : <input type="text" id="filter" placeholder="ex: 2026-05-27"></label>
+  <label><input type="checkbox" id="autoRefresh"> auto</label>
+  <button class="secondary" id="copyAll">Copier tout</button>
+</div>
+
+<div id="status" class="status">prêt</div>
+<div id="list"></div>
+
+<script>
+const REPO = 'viri-deze/screen-public';
+const BRANCH = 'main';
+const RAW_BASE = `https://raw.githubusercontent.com/${REPO}/${BRANCH}/`;
+
+const $list = document.getElementById('list');
+const $status = document.getElementById('status');
+const $window = document.getElementById('window');
+const $filter = document.getElementById('filter');
+const $fetchBtn = document.getElementById('fetchBtn');
+const $copyAll = document.getElementById('copyAll');
+const $autoRefresh = document.getElementById('autoRefresh');
+
+let currentItems = [];
+let autoTimer = null;
+
+function setStatus(msg, kind) {
+  $status.className = 'status' + (kind ? ' ' + kind : '');
+  $status.innerHTML = (kind === 'loading' ? '<span class="spinner"></span>' : '') + msg;
+}
+
+function encodePath(p) {
+  return p.split('/').map(encodeURIComponent).join('/');
+}
+
+function formatDate(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString('fr-FR', {
+    day: '2-digit', month: '2-digit',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
+function relTime(iso) {
+  const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (sec < 60) return `il y a ${sec}s`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `il y a ${min}min`;
+  const h = Math.round(min / 60);
+  return `il y a ${h}h`;
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch (e) {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); return true; }
+    catch { return false; }
+    finally { document.body.removeChild(ta); }
+  }
+}
+
+async function fetchLatest() {
+  const windowSec = Math.max(5, Math.min(3600, parseInt($window.value, 10) || 60));
+  const filter = $filter.value.trim().toLowerCase();
+  const cutoff = Date.now() - windowSec * 1000;
+
+  $fetchBtn.disabled = true;
+  setStatus(`récupération commits (fenêtre ${windowSec}s)…`, 'loading');
+  $list.innerHTML = '';
+  currentItems = [];
+
+  try {
+    const sinceIso = new Date(cutoff).toISOString();
+    const commitsResp = await fetch(
+      `https://api.github.com/repos/${REPO}/commits?per_page=30&sha=${BRANCH}&since=${encodeURIComponent(sinceIso)}`
+    );
+    if (!commitsResp.ok) {
+      if (commitsResp.status === 403) {
+        throw new Error('rate-limit GitHub (60 req/h sans auth) — réessaie dans qq minutes');
+      }
+      throw new Error(`API HTTP ${commitsResp.status}`);
+    }
+    const commits = await commitsResp.json();
+
+    const recent = commits.filter(c => new Date(c.commit.author.date).getTime() >= cutoff);
+
+    if (recent.length === 0) {
+      $list.innerHTML = `<div class="empty">aucun commit dans les ${windowSec} dernières secondes</div>`;
+      setStatus('vide', 'ok');
+      return;
+    }
+
+    const seen = new Set();
+    const items = [];
+    let scanned = 0;
+
+    for (const c of recent) {
+      scanned++;
+      setStatus(`scan commit ${scanned}/${recent.length} · ${items.length} fichier(s)`, 'loading');
+
+      const detailResp = await fetch(`https://api.github.com/repos/${REPO}/commits/${c.sha}`);
+      if (!detailResp.ok) continue;
+      const detail = await detailResp.json();
+      const date = c.commit.author.date;
+
+      for (const f of (detail.files || [])) {
+        if (!/\.(png|jpe?g|gif|webp|svg|bmp|heic|avif)$/i.test(f.filename)) continue;
+        if (f.status === 'removed') continue;
+        if (seen.has(f.filename)) continue;
+        if (filter && !f.filename.toLowerCase().includes(filter)) continue;
+        seen.add(f.filename);
+        items.push({ path: f.filename, date, sha: c.sha });
+      }
+    }
+
+    if (items.length === 0) {
+      $list.innerHTML = `<div class="empty">aucune image dans la fenêtre${filter ? ` (filtre: "${filter}")` : ''}</div>`;
+      setStatus('vide', 'ok');
+      return;
+    }
+
+    currentItems = items.map(it => ({
+      ...it,
+      url: RAW_BASE + encodePath(it.path)
+    }));
+
+    for (const it of currentItems) {
+      const div = document.createElement('div');
+      div.className = 'item';
+      div.innerHTML = `<div class="url">${it.url}</div><div class="meta">${relTime(it.date)}<br>${formatDate(it.date)}</div>`;
+      div.addEventListener('click', async () => {
+        const ok = await copyText(it.url);
+        if (ok) {
+          div.classList.add('copied');
+          setTimeout(() => div.classList.remove('copied'), 900);
+        }
+      });
+      $list.appendChild(div);
+    }
+
+    setStatus(`${items.length} lien(s) dans la fenêtre ${windowSec}s · clique pour copier`, 'ok');
+  } catch (e) {
+    setStatus('erreur : ' + e.message, 'error');
+  } finally {
+    $fetchBtn.disabled = false;
+  }
+}
+
+$fetchBtn.addEventListener('click', fetchLatest);
+$copyAll.addEventListener('click', async () => {
+  if (currentItems.length === 0) {
+    setStatus('rien à copier — fetch d\'abord', 'error');
+    return;
+  }
+  const text = currentItems.map(it => it.url).join('\n');
+  const ok = await copyText(text);
+  setStatus(ok ? `${currentItems.length} lien(s) copiés ✓` : 'copie échouée', ok ? 'ok' : 'error');
+});
+
+$filter.addEventListener('keydown', e => { if (e.key === 'Enter') fetchLatest(); });
+$window.addEventListener('keydown', e => { if (e.key === 'Enter') fetchLatest(); });
+
+$autoRefresh.addEventListener('change', () => {
+  if (autoTimer) { clearInterval(autoTimer); autoTimer = null; }
+  if ($autoRefresh.checked) {
+    autoTimer = setInterval(fetchLatest, 15000);
+  }
+});
+
+fetchLatest();
+</script>
+</body>
+</html>
